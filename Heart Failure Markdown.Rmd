@@ -1,0 +1,257 @@
+---
+title: "Heart Failure Prediction"
+author: "Matthew Buddensick"
+date: "8/21/2020"
+output:
+  html_document: 
+    highlight: default
+    theme: cosmo
+    toc: yes
+    toc_depth: 4
+    toc_float: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Objective
+
+In this notebook I will be going through a dataset I found on [kaggle](https://www.kaggle.com/andrewmvd/heart-failure-clinical-data) to predict heart failure. It can also be found on the [UCI Machine Learning Repository](https://archive.ics.uci.edu/ml/datasets/Heart+failure+clinical+records).
+
+```{r Load Packages, echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(naniar)
+library(tidymodels)
+library(janitor)
+theme_set(theme_bw())
+```
+
+## Load in and clean the data
+```{r Load Data}
+df <- read_csv('heart_failure_clinical_records_dataset.csv') %>% 
+    clean_names()
+```
+
+```{r Summary of Data}
+summary(df)
+```
+
+We can see from the summary that there are variables that are numeric that should be classified as factors. 
+
+```{r Turn Variables into Factors}
+df <- df %>% 
+    mutate(anaemia = factor(anaemia, levels = c(0,1), labels = c('No','Yes')),
+           diabetes = factor(diabetes, levels = c(0,1), labels = c('No','Yes')),
+           high_blood_pressure = factor(high_blood_pressure, 
+                                           levels = c(0,1), labels = c('No','Yes')),
+           sex = factor(sex, levels = c(0,1), labels = c('Female','Male')),
+           smoking = factor(smoking, levels = c(0,1), labels = c('No','Yes')),
+           death_event = factor(death_event,
+                                   levels = c(0,1), labels = c('Alive','Deceased')))
+```
+
+```{r}
+df$age_bin <- cut(df$age, breaks = c(30, 40, 50, 60, 70, 80, 90, 100))
+df <- df %>% 
+  select(-age)
+```
+
+### Check for missing data
+
+```{r Missing Data in df}
+(missing_data_df <- miss_var_summary(df))
+```
+
+```{r Plot Missing Data}
+ggplot(missing_data_df, aes(x = variable, y = pct_miss)) +
+    geom_bar(stat = 'identity') +
+    scale_y_continuous(labels = scales::percent, limits = c(0,1)) +
+    coord_flip() +
+    labs(title = 'Missing Data', x = 'Variable', y = 'Percent Missing')
+```
+
+There is no missing data.
+
+## Exploratory Data Analysis
+
+```{r nteraction Between Smoking and Serium Sodium Levels for each Sex}
+ggplot(df, aes(x = smoking, y = serum_sodium, fill = smoking)) +
+    geom_boxplot(alpha = .75) +
+    labs(title = 'Interaction Between Smoking and Serium Sodium Levels', 
+         x = 'Smokes', y = 'Serum Sodium') +
+  facet_wrap(~sex) +
+  scale_fill_manual(values = c('blue','red')) + 
+  theme(legend.position = 'none')
+```
+
+It looks like smoking does not have an affect on a persons serum sodium levels regardless of that persons sex.
+
+```{r Interaction Between Diabetes and Serium Sodium Levels for each Sex}
+ggplot(df, aes(x = diabetes, y = serum_sodium, fill = diabetes)) +
+    geom_boxplot(alpha = .75) +
+    labs(title = 'Interaction Between Diabetes and Serium Sodium Levels', 
+         x = 'Diabetes', y = 'Serum Sodium') +
+  facet_wrap(~sex) +
+  scale_fill_manual(values = c('blue','red')) +
+  theme(legend.position = 'none')
+```
+
+Diabetes also does not seem to have an affect on a persons serum sodium levels regardless of sex.
+
+```{r Survival based on Ejection Fraction plot}
+ggplot(df, aes(x = death_event, y = ejection_fraction / 100, fill = death_event)) +
+  geom_boxplot(alpha = .75) +
+  labs(title = 'Survival based on Ejection Fraction', x = 'Survival', 
+       y = 'Ejection Fraction') +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c('blue','red')) +
+  theme(legend.position = 'none')
+```
+
+Ejection fraction is defined as the percentage of blood leaving the heart at each contraction. Based off this plot, it looks like a higher ejection fraction means a higher chance of survival. An article from the [clevland clinic](https://my.clevelandclinic.org/health/articles/16950-ejection-fraction#:~:text=A%20normal%20left%20ventricular%20ejection,how%20well%20your%20treatment%20works.) describes that the ejection fraction of a healthy person without heart failure should range from 55% to 70%. This would support the idea that a higher ejection fraction would lead to a better chance of survival.
+
+
+```{r Ejection Fraction and Age}
+ggplot(df, aes(x = age_bin, y = ejection_fraction / 100, fill = age_bin)) +
+  geom_boxplot(alpha = .75) +
+  labs(title = 'Comparing Ejection Fraction and Age', x = 'Age Bins', 
+       y = 'Ejection Fration') +
+  scale_fill_brewer(palette = 'Set1') +
+  scale_y_continuous(labels = scales::percent) +
+  theme(legend.position = 'none')
+```
+
+Ejection Fraction seems to be relatively constant across all age groups in the data. 
+
+## Modeling
+
+For the modeling process, I am going to use a logistic regression as a baseline model. I am also going to run randomForest and XGBoost models using the tidymodels package. 
+
+Splitting the data into training and testing sets and creating a cross validation object to split the training data into 10 groups.
+
+```{r Data Split}
+set.seed(42)
+split <- initial_split(df, prop = .75, strata = death_event)
+train_data <- training(split)
+test_data <- testing(split)
+
+k_folds <- vfold_cv(train_data, 10)
+```
+
+```{r Create Recipe}
+tidy_recipe <- recipe(death_event~., data = train_data) %>% 
+  step_normalize(all_numeric()) %>% 
+  step_dummy(all_nominal(), -all_outcomes())
+
+tidy_recipe %>% prep()
+```
+
+This has created a recipe where numeric variables have been centered and scaled, and categorical variables have been converted to dummy vairbles besides the target variable. There are 12 predictor variables being used to predict the 1 target variable.
+
+```{r Build Models}
+logistic_regression_model <- logistic_reg() %>% 
+  set_mode('classification') %>% 
+  set_engine('glm')
+
+randomForest_model <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>% 
+  set_mode('classification') %>% 
+  set_engine('randomForest')
+
+XGBoost_model <- boost_tree(mtry = tune(), trees = tune(), min_n = tune(), 
+                      tree_depth = tune(), learn_rate = tune()) %>% 
+  set_mode('classification') %>% 
+  set_engine('xgboost')
+```
+
+Created 3 models using the tidymodels package. The logistic regression model has no tuning paramters and will be used as the baseline model to evaluate other models. The 2 other models being used are a randomForest and XGBoost with both having tuned parameters.
+
+Below is a function to creat a workflow object. It takes in a recipe in a model and creaters an object that aggregates information in order to fit and predict from a model.
+
+```{r Function to create a workflow}
+create_workflow <- function(recipe, model) {
+  tidy_workflow <- workflow() %>% 
+    add_recipe(recipe) %>% 
+    add_model(model)
+}
+```
+
+```{r Workflow for each model}
+logistic_wf <- create_workflow(tidy_recipe, logistic_regression_model)
+randomForest_wf <- create_workflow(tidy_recipe, randomForest_model)
+XGBoost_wf <- create_workflow(tidy_recipe, XGBoost_model)
+```
+
+Below is a function to tune the models. The function tune_grid from the tune package already does this, but I wrapped it inside of a function called tune_model for easier repitition.
+
+```{r Function to tune parameters}
+tune_model <- function(workflow, resamples = k_folds, grid = 5){
+  tidy_tune <- tune_grid(workflow, resamples = resamples, grid = grid)
+}
+```
+
+```{r Tune models}
+randomForest_tune <- tune_model(randomForest_wf)
+XGBoost_tune <- tune_model(XGBoost_wf)
+```
+
+```{r Evaluate Baseline Model on training set}
+logistic_reg <- fit_resamples(logistic_wf, k_folds)
+collect_metrics(logistic_reg)
+```
+
+The baseline model has an accuracy of about .81 and an roc_auc score of about .85 on the training data. 
+
+```{r Select the best randomForest and XGBoost model}
+tuned_randomForest <- randomForest_tune %>% select_best('roc_auc')
+tuned_XGBoost <- XGBoost_tune %>% select_best('roc_auc')
+```
+
+```{r Finalize Models}
+finalized_randomForest <- finalize_model(randomForest_model, tuned_randomForest)
+finalized_XGBoost <- finalize_model(XGBoost_model, tuned_XGBoost)
+```
+
+Since the model is now finalized with tuned parameters and the best model has been selected using the select_best function, the final model needs to be passed through a final workflow before using it on the testing data.
+
+```{r Function to create the final workflow}
+final_workflow <- function(recipe, final_model){
+  final_workflow <- workflow() %>% 
+    add_recipe(recipe) %>% 
+    add_model(final_model)
+}
+```
+
+```{r Final models using final workflow}
+final_randomForest_model <- final_workflow(tidy_recipe, finalized_randomForest)
+final_XGBoost <- final_workflow(tidy_recipe, finalized_XGBoost)
+```
+
+```{r Run the models on the testing data}
+test_randomForest <- final_randomForest_model %>% last_fit(split) %>% collect_metrics()
+test_XGBoost <- final_XGBoost %>% last_fit(split) %>% collect_metrics()
+```
+
+```{r Baseline model on the testing data}
+logistic_wf %>% last_fit(split) %>% collect_metrics()
+```
+
+The baseline model has an accuracy of about .77 on the testing data and an roc_auc score of about .83. Both the accuracy and the roc_auc score decrased on the testing set compared to the training set.
+
+```{r Lookin at metrics of the tuned models}
+test_randomForest
+test_XGBoost
+```
+
+```{r Balance of target variable in the testing set}
+test_data %>% count(death_event)
+```
+
+## Results
+Since the data is inbalanced with there being about 2x as many patients that are alive than deceased in the test data, I will use the roc_auc score as the primary metric to determine which model best fits the data.
+
+The randomForest model performs about the same as the baseline model in regard to accuracy (about .77), but better in terms of the roc_auc score (about .89).
+
+The XGBoost model performs worse than the baseline and randomForest model in terms of accuracy (about .73), and worse than the randomForest model in regards to the roc_auc score (about .88).
+
+Since the randomForest model has a better roc_auc score than the baseline model and the XGBoost model, it is the model that best fits the data.
