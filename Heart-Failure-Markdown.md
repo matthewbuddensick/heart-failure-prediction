@@ -235,7 +235,7 @@ tidy_recipe %>% prep()
     ## Dummy variables from anaemia, diabetes, high_blood_pressure, sex, ... [trained]
 
 This has created a recipe where numeric variables have been centered and
-scaled, and categorical variables have been converted to dummy vairbles
+scaled, and categorical variables have been converted to dummy varibles
 besides the target variable. There are 12 predictor variables being used
 to predict the 1 target variable.
 
@@ -260,7 +260,7 @@ evaluate other models. The 2 other models being used are a randomForest
 and XGBoost with both having tuned parameters.
 
 Below is a function to creat a workflow object. It takes in a recipe in
-a model and creaters an object that aggregates information in order to
+a model and creates an object that aggregates information in order to
 fit and predict from a model.
 
 ``` r
